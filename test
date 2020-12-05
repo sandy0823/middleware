@@ -1,0 +1,920 @@
+construct.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+HOME=`grep componentPath $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+VIP=`grep vip $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+IP1=`grep ip.node.1 $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+IP2=`grep ip.node.2 $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+
+#load config file
+if [ ! -d "$curr_dir/../log" ];then
+      mkdir $curr_dir/../log
+fi
+
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+klog=/etc/keepalived/keepalived.log
+if [ ! -d "$klog" ];then
+   if [ ! -d "/etc/keepalived" ];then
+      mkdir /etc/keepalived
+   fi
+   touch ${klog}
+fi
+
+#generate vip info into master_slave_service.properties
+master_slave_service_properties_file=$curr_dir/../conf/master_slave_service.properties
+touch ${master_slave_service_properties_file}
+echo $VIP=$IP1,$IP2 > $master_slave_service_properties_file
+
+#赋权(脚本可执行权限)
+chmod +x **
+
+#change consul start script
+echo -e "-------------------------Begin to change consul_start.sh: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+echo -e "-------------------------Begin to change consul_start.sh: $(date +"%F %T")------------------" >> ${klog} 2>&1
+sed -i 's/-bind/-advertise/g' $HOME/bin/consul/bin/consul_start.sh
+echo -e "-------------------------End to change consul_start.sh: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+echo -e "-------------------------End to change consul_start.sh: $(date +"%F %T")------------------" >> ${klog} 2>&1
+
+#install mitmproxy
+sh $curr_dir/init_monitor_request.sh
+#call protect process to start mitmproxy
+if [ $? -eq 0 ]
+then
+  sh $curr_dir/protect_monitor_request.sh
+  
+  echo -e "-------------------------Begin to set timed tasks to monitor mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+  echo -e "-------------------------Begin to set timed tasks to monitor mitmproxy: $(date +"%F %T")------------------" >> ${klog} 2>&1
+  user_name=`echo ${USER}`
+#  crontab_file=`ls /var/spool/cron |grep $user_name`
+#  if [ ! -n "$crontab_file" ]
+#  then
+#    crontab_file=/var/spool/cron/${user_name}cron
+#    touch $crontab_file
+#  fi
+  # set timed tasks to monitor mitmproxy,when it not run,this can start it again
+  crontab_file="/etc/crontab"
+  task=`grep protect_monitor_request.sh $crontab_file`
+  if [ ! -n "$task" ]
+  then
+     echo '*/1 * * * * root '$curr_dir'/protect_monitor_request.sh &>/dev/null 2>&1' >>$crontab_file
+	 service crond restart
+	 echo -e "`date +%F\ %T` INFO: set timed tasks to monitor mitmproxy successfully" >> ${consul_log_file} 2>&1
+  fi
+  echo -e "-------------------------End to set timed tasks to monitor mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+  echo -e "-------------------------End to set timed tasks to monitor mitmproxy: $(date +"%F %T")------------------" >> ${klog} 2>&1
+  exit 0
+else
+  exit 1
+fi
+
+
+init_monitor_request.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+default_mitmproxy_port=`grep mitmproxy_port $curr_dir/../conf/default.properties | awk -F "=" '{print $2}'`
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+klog=/etc/keepalived/keepalived.log
+
+gclib_log_file=$curr_dir/../log/gclib_log.log
+touch ${gclib_log_file}
+
+#install mitmproxy
+echo -e "-------------------------Begin to install mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+echo -e "-------------------------Begin to install mitmproxy: $(date +"%F %T")------------------" >> ${klog} 2>&1
+installed_glibc=`strings /lib64/libc.so.6|grep GLIBC_2.18`
+echo "$installed_glibc"
+if [ -n "$installed_glibc" ]
+then
+  echo -e "`date +%F\ %T` INFO: installed glibc_2.18" >> ${consul_log_file} 2>&1
+else
+  echo -e "`date +%F\ %T` INFO: start to install glibc_2.18" >> ${consul_log_file} 2>&1
+  echo -e "`date +%F\ %T` INFO: start to install glibc_2.18" > ${gclib_log_file} 2>&1
+  cd $curr_dir/../tool/
+  tar -zxvf glibc-2.18.tar.gz
+  cd glibc-2.18
+  build_dir=$(pwd)/build
+  if [ -d "$build_dir" ]
+  then
+     rm -rf $build_dir
+  fi
+  echo "start to buid glibc-2.18,please wait..."
+  mkdir build && cd build/ 
+  ../configure --prefix=/usr --disable-profile --enable-add-ons --with-headers=/usr/include --with-binutils=/usr/bin >> ${gclib_log_file} 2>&1
+  echo "start to make glibc-2.18,please wait..."
+  make >> ${gclib_log_file} 2>&1 
+  echo "start to install glibc-2.18,please wait..."
+  make install >> ${gclib_log_file} 2>&1
+  cd $curr_dir/   #jump bin dir
+  installed_glibc=`strings /lib64/libc.so.6|grep GLIBC_2.18`
+  if [ ! -n "$installed_glibc" ]
+  then
+    echo -e "`date +%F\ %T` ERROR: install glibc_2.18 fail" >> ${consul_log_file} 2>&1
+	echo -e "`date +%F\ %T` ERROR: install glibc_2.18 fail" > ${gclib_log_file} 2>&1
+	echo -e "`date +%F\ %T` ERROR: install glibc_2.18 fail" >> ${klog} 2>&1
+	exit 1
+  else
+    echo -e "`date +%F\ %T` INFO: install glibc_2.18 successfully" >> ${consul_log_file} 2>&1
+	echo -e "`date +%F\ %T` INFO: install glibc_2.18 successfully" > ${gclib_log_file} 2>&1
+	echo -e "`date +%F\ %T` INFO: install glibc_2.18 successfully" >> ${klog} 2>&1
+  fi
+fi
+
+echo -e "`date +%F\ %T` INFO: start to install mitmproxy" >> ${consul_log_file} 2>&1
+echo "start to install mitmproxy,please wait..."
+if [ ! -d "$curr_dir/../tool/mitmproxy" ];then
+  mkdir $curr_dir/../tool/mitmproxy
+  tar -zxvf $curr_dir/../tool/mitmproxy-5.3.0-linux.tar.gz -C $curr_dir/../tool/mitmproxy
+fi
+version_info=`${curr_dir}/../tool/mitmproxy/mitmproxy --version |grep Mitmproxy`
+if [ ! -n "$version_info" ]  # install fail maybe lack of some library
+then
+  echo -e "`date +%F\ %T` ERROR: install mitmproxy fail" >> ${consul_log_file} 2>&1
+  echo -e "`date +%F\ %T` ERROR: install mitmproxy fail" >> ${klog} 2>&1
+  exit 1
+else
+  echo -e "`date +%F\ %T` INFO: install mitmproxy successfully" >> ${consul_log_file} 2>&1 
+  echo -e "`date +%F\ %T` INFO: install mitmproxy successfully" >> ${klog} 2>&1 
+fi
+echo -e "-------------------------END to install mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+echo -e "-------------------------END to install mitmproxy: $(date +"%F %T")------------------" >> ${klog} 2>&1
+
+#check mitmproxy port
+echo -e "-------------------------Begin to find avaliabe port for mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+echo -e "-------------------------Begin to find avaliabe port for mitmproxy: $(date +"%F %T")------------------" >> ${klog} 2>&1
+source $curr_dir/port_conflict.sh
+port=$(get_avaliable_port $default_mitmproxy_port)
+if [ ! -n "$(echo $port| sed -n "/^[0-9]\+$/p")" ];then 
+  echo -e "`date +%F\ %T` ERROR: find avaliabe port for mitmproxy fail.state[${port}]" >> ${consul_log_file} 2>&1 
+  echo -e "`date +%F\ %T` ERROR: find avaliabe port for mitmproxy fail.state[${port}]" >> ${klog} 2>&1 
+  exit 1
+fi
+
+sed -i 's#\(mitmproxy_port=\).*#\1'"${port}"'#g'  $curr_dir/../conf/default.properties
+echo -e "-------------------------END to find avaliabe port for  mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+echo -e "-------------------------END to find avaliabe port for  mitmproxy: $(date +"%F %T")------------------" >> ${klog} 2>&1
+
+# init iptables
+sh init_modify_request_iptables.sh
+exit $?
+
+protect_monitor_request.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+default_mitmproxy_port=`grep mitmproxy_port $curr_dir/../conf/default.properties | awk -F "=" '{print $2}'`
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+
+pid=`lsof -i:$default_mitmproxy_port|grep mitmproxy | awk '{print$2}'`
+if [ ! -n "$pid" ]
+then
+  echo -e "`date +%F\ %T` INFO-protect: mitmproxy has stoped,start mitmproxy" >> ${consul_log_file} 2>&1
+  nohup sh $curr_dir/start_monitor_request.sh &
+else
+  echo -e "`date +%F\ %T` INFO-protect: mitmproxy is running" >> ${consul_log_file} 2>&1
+fi
+
+start_monitor_request.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+default_mitmproxy_port=`grep mitmproxy_port $curr_dir/../conf/default.properties | awk -F "=" '{print $2}'`
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+
+modify_register_request_log_file=$curr_dir/../log/modify-register-request.log
+touch ${modify_register_request_log_file}
+modify_register_request_log_size=$(du -s ${modify_register_request_log_file}  |awk '{print  $1}')
+if [ ${modify_register_request_log_file} -gt 10000 ]
+then
+    mv -f ${modify_register_request_log_file} ${modify_register_request_log_file}_`date +%F\ %T`
+    touch ${modify_register_request_log_file}
+fi
+
+chmod 777 $curr_dir/../log/**
+mitmproxy_dir=$curr_dir/../tool/mitmproxy
+
+echo -e "-------------------------Begin to start mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+
+sh $curr_dir/init_modify_request_iptables.sh
+
+cd $mitmproxy_dir
+#sudo -u mitmproxyuser -H bash -c './mitmdump --mode TRANSPORT -p $default_mitmproxy_port -s $curr_dir/bin/modifyRegisterRequest.py'
+sudo -u mitmproxyuser -H bash -c './mitmdump --mode transparent -p '$default_mitmproxy_port' -s '$curr_dir'/bin/modifyRegisterRequest.py' >/dev/null 2>&1
+echo -e "-------------------------End to start mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+
+stop_monitor_request.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+default_mitmproxy_port=`grep mitmproxy_port $curr_dir/../conf/default.properties | awk -F "=" '{print $2}'`
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+
+echo -e "-------------------------Begin to stop mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+
+pid=`lsof -i:$default_mitmproxy_port|grep mitmproxy | awk '{print$2}'`
+if [ ! -n "$pid" ]
+then
+  echo -e "`date +%F\ %T` INFO: mitmproxy has stoped" >> ${consul_log_file} 2>&1
+else
+  kill -9 $pid
+  echo -e "`date +%F\ %T` INFO: stop mitmproxy successfully" >> ${consul_log_file} 2>&1
+fi
+
+echo -e "-------------------------END to stop mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+
+init_modify_request_iptables.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+VIP=`grep vip $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+IP1=`grep ip.node.1 $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+IP2=`grep ip.node.2 $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+HOME=`grep componentPath $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+CONSULPORT=`cat "${HOME}/conf/config.properties" | grep consul.[[:digit:]]*.webPort | awk '{print $1}'| awk -F "=" '{print $2}'`
+default_mitmproxy_port=`grep mitmproxy_port $curr_dir/../conf/default.properties | awk -F "=" '{print $2}'`
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+
+#change iptables
+echo -e "-------------------------Begin to change iptables for mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+
+# check iptables
+line_number=`iptables -t nat -L PREROUTING --line-numbers | grep REDIRECT |awk '{print$1}'`
+if [ -n "$line_number" ];then
+  echo -e "`date +%F\ %T` INFO: iptables for mitmproxy had exist" >> ${consul_log_file} 2>&1
+  echo -e "-------------------------Begin to change iptables for mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+  exit 0
+fi
+
+# get local ip and remote ip
+ip=`ip a`
+local_ip=
+remote_ip=
+result=$(echo $ip | grep "${IP1}")
+if [[ "$result" != "" ]]
+then
+    local_ip=$IP1
+    remote_ip=$IP2
+	echo -e "`date +%F\ %T`: Local IP is $local_ip" >> ${consul_log_file} 2>&1
+	echo -e "`date +%F\ %T`: Remote IP is $remote_ip" >> ${consul_log_file} 2>&1
+else
+    result=$(echo $ip | grep "${ip2}")
+    if [[ "$result" != "" ]]
+    then
+        local_ip=$IP2
+        remote_ip=$IP1
+		echo -e "`date +%F\ %T` INFO: Local IP is $local_ip" >> ${consul_log_file} 2>&1
+	echo -e "`date +%F\ %T`INFO : Remote IP is $remote_ip" >> ${consul_log_file} 2>&1
+    else
+        echo -e "`date +%F\ %T`INFO : IP config is error,please check it!" >> ${consul_log_file} 2>&1
+        exit 1;
+    fi
+fi
+
+check_user()
+{
+	#判断用户是否存在passwd中
+	i=`cat /etc/passwd | cut -f1 -d':' | grep -w "$1" -c`
+	if [ $i -le 0 ]; then
+		echo "User $1 is not in the passwd"
+		return 0
+	else
+	#显示用户存在
+		echo "User $1 is in then passwd"
+		return 1
+	fi
+}
+
+check_user mitmproxyuser
+state=$?
+if [ $state -eq 0 ];then
+  useradd --create-home mitmproxyuser
+fi
+
+# 值替换不了 要换成下面那种写法
+#network_card=`ifconfig | sed '$!N;/"$local_ip"/{P;d};D' | awk -F ':' '{print$1}' |sed s/[[:space:]]//g`
+network_card=$(ifconfig | sed '$!N;/'${local_ip}'/{P;d};D' | awk -F ':' '{print$1}' |sed s/[[:space:]]//g)
+iptables -t nat -A PREROUTING -i $network_card -p tcp --dport $CONSULPORT -j REDIRECT --to-port $default_mitmproxy_port
+iptables -t nat -A OUTPUT -p tcp -m owner ! --uid-owner mitmproxyuser --dport $CONSULPORT -j REDIRECT --to-port $default_mitmproxy_port
+
+if [ $? -eq 0 ];then
+  echo -e "`date +%F\ %T`INFO : change iptables for mitmproxy successfully!" >> ${consul_log_file} 2>&1
+  echo -e "-------------------------END to change iptables for mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+  exit 0
+else
+  echo -e "`date +%F\ %T`ERROR : change iptables for mitmproxy FAIL!" >> ${consul_log_file} 2>&1
+  echo -e "-------------------------END to change iptables for mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+  exit 1
+fi
+
+notify_modify_service_ip.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\%T`.log
+    touch ${consul_log_file}
+fi
+
+echo -e "-------------------------Begin to monitor master_slave_service.properties for modifying regsiter service ip: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+
+# start to monitor change of master_slave_service.properties by inotify
+inotifywait -mrq -e modify,create $curr_dir/../conf/master_slave_service.properties | while read FILE
+do
+   echo -e "`date +%F\ %T` INFO-notify: master_slave_service.properties change" >> ${consul_log_file} 2>&1
+   sh $curr_dir/modify_service_ip.sh
+done
+echo -e "-------------------------End to monitor master_slave_service.properties for modifying regsiter service ip: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+
+modify_service_ip.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+VIP=`grep vip $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+IP1=`grep ip.node.1 $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+IP2=`grep ip.node.2 $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+
+CONSULHOME=`grep componentPath $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+CONSUL_VERSION=`grep "<version>" $CONSULHOME/META-INF/versioninfo.xml |sed -e 's/<version>//g'|sed -e 's/<\/version>//g' | sed s/[[:space:]]//g`
+
+#find data dir
+if [[ "$CONSUL_VERSION" > "2.2.100" ]]
+then
+   DATA_DIR=$CONSULHOME/data
+else
+   DATA_DIR=$CONSULHOME/../consul_data
+fi
+
+SERVICE_DIR=$DATA_DIR/services
+CHECK_DIR=$DATA_DIR/checks
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\%T`.log
+    touch ${consul_log_file}
+fi
+
+# modify register service ip
+echo -e "-------------------------Begin to scan data for modifying regsiter service ip: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+
+#read vip and machine ip(master and slave from master_slave_service.properties) info
+declare -A vip_info
+while read line
+do
+    # properties文件需要有换行符才能被读取
+	no_space_line=`echo ${line} |sed s/[[:space:]]//g |grep \#`
+    if [ ! -n "$no_space_line" ];then
+	  k=${line%=*}
+      v=${line#*=}
+	  vip_info["${k}"]=$v
+	fi
+done  < $curr_dir/../conf/master_slave_service.properties
+
+# check special value if exists in array
+array_contains(){
+  array=$1
+  key=$2
+  has_status=`echo "${array[@]}" | grep -w "${key}"`
+  if [ ! -n "$has_status" ]
+  then
+    echo 1
+  else
+    echo 0
+  fi  
+}
+
+#first modify service
+ contain_service_ip(){
+   ip=$1
+   service_file=$2
+   has_status=`sed 's/,/\n/g' $service_file |grep Address|grep $ip`
+   if [ ! -n "$has_status" ]
+   then
+     echo 1
+   else
+     echo 0
+   fi
+}
+
+replace_service_ip(){
+	service_file=$1
+	echo -e "`date +%F\ %T` INFO: update ip to vip,file ${service_file}" >> ${consul_log_file} 2>&1
+	sed -i 's#\("Address":"\).*\(",\)#\1'"${VIP}"'\2#g' $service_file 
+	#sed -i 's#\("Address":"\).*#\1'"${VIP}"'",#g' $service_file 
+}
+
+OLD_IFS="$IFS"
+IFS=","
+for file in $SERVICE_DIR/*;do
+   echo -e "`date +%F\ %T` INFO: scan service [${file}] wheather to update ip into vip" >> ${consul_log_file} 2>&1
+   for vip in ${!vip_info[*]};do
+      value="${vip_info[$vip]}"
+	  value_array=($value)
+	  ip1=${value_array[0]}
+	  ip2=${value_array[1]}
+	  if [[ `contain_service_ip $ip1 $file` -eq 0 ]] || [[ `contain_service_ip $ip2 $file` -eq 0 ]]
+	  then
+	    if [ ${#value_array[@]} -gt 2 ]  # has service
+	    then
+		   #get service in service file
+	       result=`sed 's/,/\n/g' $file |grep Service|grep -v "{" |awk -F ':' '{print $2}' |sed 's/\"//g'`
+		   if [ -n "$result" ]
+		   then
+		      has_status=`array_contains "${value_array[*]}" $result`
+		      if [ $has_status -eq 0 ] #This service need update
+		      then
+                # replace ip1\ip2 to vip 
+	            replace_service_ip $file
+		      fi
+		    else
+		      echo -e "`date +%F\ %T` ERROR: cannot get service in ${file},please check" >> ${consul_log_file} 2>&1
+		    fi
+	    else
+		 # replace ip1\ip2 to vip 
+	      replace_service_ip $file
+		fi
+	  fi
+   done
+done
+IFS="$OLD_IFS"
+
+#delete same service file which address and servicename are both same
+i=0
+j=0
+service_array=()
+delete_sevice_id_array=()
+for file in $SERVICE_DIR/*;do
+  service_address=`sed 's/,/\n/g' $file |grep Address|grep -v "{" |awk -F ':' '{print $2}' |sed 's/\"//g'`":"`sed 's/,/\n/g' $file |grep Port|grep -v "{" |awk -F ':' '{print $2}' |sed 's/\"//g'`
+  echo ${service_array[@]}
+  if [ `array_contains "${service_array[*]}" $service_address` -eq 0 ]  #contain service_addres,it needs to delete
+  then
+    echo -e "`date +%F\ %T` INFO: delete duplicate service register,file is ${file},service_address is ${service_address}" >> ${consul_log_file} 2>&1
+	delete_sevice_id_array[j]=`sed 's/,/\n/g' $file |grep ID|awk -F ':' '{print $3}' |sed 's/\"//g'`
+	rm -f $file
+	let j++
+  else
+    service_array[i]=$service_address
+	let i++
+  fi
+done
+
+#second modify check
+contain_check_ip(){
+  ip=$1
+  check_file=$2
+  http_value=`sed 's/,/\n/g' $check_file |grep \"HTTP\"|grep $ip`
+   if [ ! -n "$http_value" ]
+   then
+     echo 1
+   else
+     echo 0
+   fi
+}
+
+replace_check_ip(){
+	service_file=$1
+	echo -e "`date +%F\ %T` INFO: update ip to vip,file ${service_file}" >> ${consul_log_file} 2>&1
+	old_http_value=`sed 's/,/\n/g' $service_file |grep \"HTTP\"|sed 's/\"//g'|awk -F ':' '{print $3}'|sed 's/\/\///g'`
+#	http_value=`sed 's/(\b[0-9]{1,3}\.){3}[0-9]{1,3}\b'/$VIP/ $http_value`
+	sed -i 's#'"${old_http_value}"'#'"${VIP}"'#g' $service_file 
+}
+
+OLD_IFS="$IFS"
+IFS=","
+for file in $CHECK_DIR/*;do
+   echo -e "`date +%F\ %T` INFO: scan service check[${file}] wheather to update ip into vip" >> ${consul_log_file} 2>&1
+   for vip in ${!vip_info[*]};do
+      value=${vip_info[$vip]}
+	  value_array=($value)
+	  ip1=${value_array[0]}
+	  ip2=${value_array[1]}
+	  if [[ `contain_check_ip $ip1 $file` -eq 0 ]] || [[ `contain_check_ip $ip2 $file` -eq 0 ]]
+	  then
+	    if [ ${#value_array[@]} -gt 2 ]  # has service
+	    then
+		   #get serviceName in service file
+	       result=`sed 's/,/\n/g' $file |grep ServiceName|grep -v "{" |awk -F ':' '{print $2}' |sed 's/\"//g'`
+		   if [ -n "$result" ]
+		   then
+		      has_status=`array_contains "${value[*]}" $result`
+		      if [ $has_status -eq 0 ] #This service need update
+		      then
+                # replace ip1\ip2 to vip 
+	            replace_check_ip $file
+		      fi
+		   else
+		      echo -e "`date +%F\ %T` ERROR: cannot get serviceName in ${file},please check" >> ${consul_log_file} 2>&1
+		   fi
+	    else
+		 # replace ip1\ip2 to vip 
+	      replace_check_ip $file
+		fi
+	  fi
+   done
+done
+IFS="$OLD_IFS"
+
+#delete check file for serviceId which is deleted
+for file in $CHECK_DIR/*;do
+  service_id=`sed 's/,/\n/g' $file |grep ServiceID|grep -v "{" |awk -F ':' '{print $2}' |sed 's/\"//g'`
+  if [ `array_contains "${delete_sevice_id_array[*]}" $service_id` -eq 0 ]
+   then
+     echo -e "`date +%F\ %T` INFO: delete duplicate service check register,file is ${file},service_id is ${service_id}" >> ${consul_log_file} 2>&1
+     rm -f $file
+   fi
+done
+
+echo -e "-------------------------End to scan data for modifying regsiter service ip: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+exit 0
+
+stop_notify_modify_service_ip.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+
+echo -e "-------------------------Begin to stop to monitor master_slave_service.properties for modifying regsiter service ip: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+pids=`ps aux|grep inotifywait |grep master_slave_service.properties |awk '{print $2}' |sed s/[[:space:]]//g`
+#if [ ! -n "${pid}" ]
+#then 
+#  kill -9 $pid
+#fi
+for pid in ${pids[@]};do
+   kill -9 $pid
+done
+
+echo -e "-------------------------End to stop to monitor master_slave_service.properties for modifying regsiter service ip: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+
+exit 0
+
+
+port_conflict.sh
+#!/bin/bash  -xv
+cd $(dirname $0)
+curr_dir=$(pwd)
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+
+#传入待检测端口
+function get_consul_manager_port(){
+  portcount=`netstat -anp|grep $1|grep LISTEN|wc -l`
+  return ${portcount}
+}
+
+function get_avaliable_port(){
+   get_consul_manager_port $1
+   portcount=$?
+   echo -e "`date +%F\ %T` INFO: '$1' start to check,result is $portcount" >> ${consul_log_file} 2>&1
+   if [ $portcount -lt 1 ];then
+      echo -e "`date +%F\ %T` INFO: final reuslt:$1" >> ${consul_log_file} 2>&1
+      echo $1
+      return $1
+   fi
+    echo -e "`date +%F\ %T` INFO: $1 is in used" >> ${consul_log_file} 2>&1
+   high_port=32766
+   # while (( ${portcount} -gt 0 ))
+   while (( ${portcount} >0 ))
+   do
+     let high_port--
+     get_consul_manager_port $high_port
+     portcount=$?
+	 echo -e "`date +%F\ %T` INFO: $check '$high_port' wheather is in used.result is $portcount" >> ${consul_log_file} 2>&1
+   done
+   echo -e "`date +%F\ %T` INFO: final reuslt:$high_port" >> ${consul_log_file} 2>&1
+   echo $high_port
+   return $high_port
+}
+
+destory.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+
+#destory mitmproxy
+sh $curr_dir/destory_monitor_request.sh 
+
+#stop to notify to modify service ip
+sh $curr_dir/stop_notify_modify_service_ip.sh
+
+exit 0
+
+destory_monitor_request.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+
+echo -e "-------------------------Begin to destory mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+#stop and delete timed task for monitoring mitmproxy
+echo -e "`date +%F\ %T` INFO: start to stop and delete timed task for monitoring mitmproxy " >> ${consul_log_file} 2>&1
+user_name=`echo ${USER}`
+#crontab_file=`ls /var/spool/cron |grep $user_name`
+crontab_file="/etc/crontab"
+if [ -f "$crontab_file" ]
+then
+   sed -i "/protect_monitor_request.sh/d" $crontab_file
+   service crond restart
+   echo -e "`date +%F\ %T` INFO: delete timed tasks for monitoring mitmproxy successfully" >> ${consul_log_file} 2>&1
+fi
+
+#stop mitmproxy
+sh $curr_dir/stop_monitor_request.sh
+
+rm -rf $curr_dir/../tool/mitmproxy
+rm -rf $curr_dir/../tool/glibc-2.18
+
+# delete iptables for mitmproxy
+line_number=`iptables -t nat -L PREROUTING --line-numbers | grep REDIRECT |awk '{print$1}'`
+if [ -n "$line_number" ];then
+  iptables -t nat -D PREROUTING $line_number
+fi
+
+line_number=`iptables -t nat -L OUTPUT --line-numbers | grep REDIRECT |awk '{print$1}'`
+if [ -n "$line_number" ];then
+  iptables -t nat -D OUTPUT $line_number
+fi
+
+rm -rf $curr_dir/../conf/mitmproxy-iptables
+
+echo -e "-------------------------End to destory mitmproxy: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+
+stop_notify_modify_service_ip.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+
+echo -e "-------------------------Begin to stop to monitor master_slave_service.properties for modifying regsiter service ip: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+pids=`ps aux|grep inotifywait |grep master_slave_service.properties |awk '{print $2}' |sed s/[[:space:]]//g`
+#if [ ! -n "${pid}" ]
+#then 
+#  kill -9 $pid
+#fi
+for pid in ${pids[@]};do
+   kill -9 $pid
+done
+
+echo -e "-------------------------End to stop to monitor master_slave_service.properties for modifying regsiter service ip: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+
+exit 0
+
+switch.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+VIP=`grep vip $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+IP1=`grep ip.node.1 $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+IP2=`grep ip.node.2 $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+
+# get local ip and remote ip
+ip=`ip a`
+local_ip=
+remote_ip=
+result=$(echo $ip | grep "${IP1}")
+if [[ "$result" != "" ]]
+then
+    local_ip=$IP1
+    remote_ip=$IP2
+	echo -e "`date +%F\ %T`: Local IP is $local_ip" >> ${consul_log_file} 2>&1
+	echo -e "`date +%F\ %T`: Remote IP is $remote_ip" >> ${consul_log_file} 2>&1
+else
+    result=$(echo $ip | grep "${ip2}")
+    if [[ "$result" != "" ]]
+    then
+        local_ip=$IP2
+        remote_ip=$IP1
+		echo -e "`date +%F\ %T` INFO: Local IP is $local_ip" >> ${consul_log_file} 2>&1
+	echo -e "`date +%F\ %T`INFO : Remote IP is $remote_ip" >> ${consul_log_file} 2>&1
+    else
+        echo -e "`date +%F\ %T`INFO : IP config is error,please check it!" >> ${consul_log_file} 2>&1
+        exit 0;
+    fi
+fi
+
+echo -e "-------------------------Begin switch: $(date +"%F %T")------------------" >> ${consul_log_file} 2>&1
+#check if local is vip and execute responsive script file
+result=$(echo $ip | grep "${VIP}")
+e_status=0
+if [["${result}" != ""]]
+then
+#master
+   echo -e "`date +%F\ %T` INFO: This is to switch master. Execute switch_master.sh"
+   echo -e "`date +%F\ %T` INFO: This is to switch master. Execute switch_master.sh" >> ${consul_log_file} 2>&1
+   sh $curr_dir/switch_master.sh
+   e_status = $?
+else
+# slave
+   echo -e "`date +%F\ %T` INFO: This is to switch slave. Execute switch_slave.sh"
+   echo -e "`date +%F\ %T` INFO: This is to switch slave. Execute switch_slave.sh" >> ${consul_log_file} 2>&1
+   sh $curr_dir/switch_slave.sh
+   e_status = $?
+fi
+
+exit $e_status
+
+switch_slave.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+
+#stop to monitor change of master_slave_service.properties
+sh $curr_dir/stop_notify_modify_service_ip.sh 
+
+switch_master.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+
+#call modify_service_ip.sh
+sh -xv $curr_dir/modify_service_ip.sh
+
+#start to monitor change of master_slave_service.properties
+nohup sh -xv $curr_dir/notify_modify_service_ip.sh &
+
+#restart consul
+CONSULHOME=`grep componentPath $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+sh ${CONSULHOME}/bin/consul/bin/consul_restart.sh
+
+health_check.sh
+#!/bin/bash
+cd $(dirname $0)
+curr_dir=$(pwd)
+echo $curr_dir
+
+HOME=`grep componentPath $curr_dir/../conf/config.properties | awk -F "=" '{print $2}'`
+CONSULPORT=`cat "${HOME}/conf/config.properties" | grep consul.[[:digit:]]*.webPort | awk '{print $1}'| awk -F "=" '{print $2}'`
+
+#load config file
+consul_log_file=$curr_dir/../log/consul_log.log
+touch ${consul_log_file}
+consul_log_size=$(du -s ${consul_log_file}  |awk '{print  $1}')
+if [ ${consul_log_size} -gt 10000 ]
+then
+    mv -f ${consul_log_file} ${consul_log_file}_`date +%F\ %T`
+    touch ${consul_log_file}
+fi
+
+data=`curl http://127.0.0.1:$CONSULPORT/v1/catalog/services`
+result=`echo $data |grep bic`
+if [ ! -n "$result" ];then 
+   echo -e "`date +%F\ %T` ERROR: consul health check fail,data:[$data]" >> ${consul_log_file} 2>&1
+   exit 1
+else
+   exit 0
+fi
+
+
+
+
