@@ -917,4 +917,165 @@ fi
 
 
 
+modifyRegisterRequest.py
+import sys
+
+import mitmproxy
+import logging
+import json
+from mitmproxy import ctx
+
+import Properties
+
+def parseResourceHome():
+    path = sys.path[0]
+    ctx.log.info("py in path[" + path + "]")
+    index = path.rfind('/')
+    binpath = path[0:index]
+    binindex = binpath.rfind('/')
+    resourceHome = binpath[0:binindex + 1]
+    ctx.log.info("resourceHome[" + str(resourceHome) + "]")
+    return resourceHome
+
+logging.basicConfig(level=logging.DEBUG,  # 控制台打印的日志级别
+                    filename=parseResourceHome()+'log/modify-register-request.log',
+                    filemode='a',  # 模式，有w和a，w就是写模式，每次都会重新写日志，覆盖之前的日志
+                    # a是追加模式，默认如果不写的话，就是追加模式
+                    format=
+                    '%(asctime)s - %(pathname)s[line:%(lineno)d] - %(levelname)s: %(message)s'
+                    # 日志格式
+                    )
+    
+
+class ModifyRegisterRequest:
+    def __init__(self):
+        ctx.log.info("ModifyRegisterRequest")
+
+    def request(self, flow: mitmproxy.http.HTTPFlow):
+        if flow.request.path.rfind("/service/register") != -1:
+            # read from properties for getting vip infos
+            ip_disc = self.__parseIpDisc()
+            # check to change service ip
+            request_data_json = json.loads(flow.request.get_text())
+            service_ip = request_data_json["Address"]
+            if service_ip in ip_disc.keys():
+                request_data_json["Address"] = ip_disc[service_ip]
+                #change health interface
+                if "Check" in request_data_json.keys():
+                    check_data=request_data_json["Check"]
+                    if "HTTP" in check_data.keys():
+                        http_health=check_data["HTTP"]
+                        check_data["HTTP"]=http_health.replace(service_ip,ip_disc[service_ip])
+                request_data = json.dumps(request_data_json)
+                flow.request.set_text(request_data)
+
+                logging.debug(
+                    "request url[" + str(flow.request.path) + "]content[" + str(flow.request.get_text() + "]"))
+                ctx.log.debug(
+                    "request url[" + str(flow.request.path) + "]content[" + str(flow.request.get_content) + "]")
+
+    def __parseIpDisc(self):
+        resource_home_path = parseResourceHome()
+        config_path = resource_home_path + 'conf/master_slave_service.properties'
+        logging.debug('path of master_slave_service.properties is ' + config_path)
+        ctx.log.info('path of master_slave_service.properties is ' + config_path)
+        readVip = ReadVip(config_path)
+        readVip.parseToIpProperties()
+        logging.debug(str(readVip.ip_dict))
+        return readVip.ip_dict
+
+
+class ReadVip:
+    def __init__(self, filepath):
+        self.ip_dict = {}
+        self.vipProperties = Properties.parse(filepath)
+
+    def parseToIpProperties(self):
+        for k, v in self.vipProperties.getProperties().items():
+            arrays = v.split(',')
+            self.ip_dict[arrays[0]] = k
+            self.ip_dict[arrays[1]] = k
+
+    def getIpDisc(self):
+        return self.ip_dict
+
+
+addons = [
+   ModifyRegisterRequest()
+]
+
+
+Properties.py
+import re
+import os
+import tempfile
+
+
+class Properties:
+
+    def __init__(self, file_name):
+        self.file_name = file_name
+        self.properties = {}
+        try:
+            open_file = open(self.file_name, 'r')
+            for line in open_file:
+                line = line.strip()
+                if line.find('=') > 0 and not line.startswith('#'):
+                    arrays = line.split('=')
+                    self.properties[arrays[0].strip()] = arrays[1].strip()
+        except Exception as e:
+            raise e
+        else:
+            open_file.close()
+
+    def has_key(self, key):
+        return key in self.properties
+
+    def get(self, key, default_value=''):
+        if key in self.properties:
+            return self.properties[key]
+        return default_value
+
+    def put(self, key, value):
+        self.properties[key] = value
+        replace_property(self.file_name, key + '=.*', key + '=' + value, True)
+
+    def getProperties(self):
+        return self.properties
+
+
+def parse(file_name):
+    return Properties(file_name)
+
+
+def replace_property(file_name, from_regex, to_str, append_on_not_exists=True):
+    tmp_file = tempfile.TemporaryFile()
+
+    if os.path.exists(file_name):
+        r_open = open(file_name, 'r')
+        pattern = re.compile(r'' + from_regex)
+        found = None
+        for line in r_open:
+            if pattern.search(line) and not line.strip().startswith('#'):
+                found = True
+                line = re.sub(from_regex, to_str, line)
+            tmp_file.write(line)
+        if not found and append_on_not_exists:
+            tmp_file.write('\n' + to_str)
+        r_open.close()
+        tmp_file.seek(0)
+
+        content = tmp_file.read()
+
+        if os.path.exists(file_name):
+            os.remove(file_name)
+
+        w_open = open(file_name, 'w')
+        w_open.write(str(content))
+        w_open.close()
+
+        tmp_file.close()
+    else:
+        print("file %s not found" % file_name)
+	
 
